@@ -116,8 +116,8 @@ double get_vLOS(struct Triple *trip, double t)
 	e2       = trip->params[2];
 	n2       = exp(trip->params[3])/YEAR;
 	T2       = YEAR*exp(trip->params[4]);
-			
-	phi2 = get_phi(t, T2, e2, n2);
+
+	phi2 = get_phi(t, T2, e2, n2); //if (t == 0.) fprintf(stdout, "phi2_{0}: %f\n", phi2);
 	
 	return A2*(sin(phi2 + omegabar) + e2*sin(omegabar));
 }
@@ -205,10 +205,9 @@ void GB_triple(struct GB *gb, double *XLS, double *ALS, double *ELS, struct Trip
 	solve_phase_H(trip, gb, phase_H_soln, No, wfm->T);
 	trip->phase = phase_H_soln;
 	
-	gsl_interp_accel *acc = gsl_interp_accel_alloc();
- 	gsl_spline *spline = gsl_spline_alloc(gsl_interp_cspline, No);
- 	trip->spline = spline;
- 	trip->acc    = acc;
+	trip->acc    = gsl_interp_accel_alloc();
+ 	trip->spline = gsl_spline_alloc(gsl_interp_cspline, No);
+
  	gsl_spline_init(trip->spline, phase_H_soln[0], phase_H_soln[1], No);
 
 	// adjust the carrier bin
@@ -236,11 +235,12 @@ void GB_triple(struct GB *gb, double *XLS, double *ALS, double *ELS, struct Trip
 	free_waveform(wfm);  // Deallocate memory
 	free(wfm);
 	
-	gsl_spline_free(spline);
-    gsl_interp_accel_free(acc);
+	gsl_spline_free(trip->spline);
+    gsl_interp_accel_free(trip->acc);
     
 	free(phase_H_soln[0]);
 	free(phase_H_soln[1]);
+	free(phase_H_soln);
 	return;
 }
 

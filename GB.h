@@ -17,9 +17,11 @@ struct GB
 	
 	long q, N;  		// carrier freq bin, number of samples
 	
-	long NP;			// number of parameters
+	int NP;			// number of parameters
 	
 	int who;
+	
+	double snr, overlap;
 };
 
 struct Waveform
@@ -106,6 +108,10 @@ void copy_params(struct Waveform *wfm, double *params);
 
 void calc_xi_f(struct Waveform *wfm, double t);
 
+//
+void FAST_LISA_GR(double *params, long N, double *XLS, double *ALS, double *ELS, int NP);
+void calc_xi_f_GR(struct Waveform *wfm, double t);
+void get_transfer_GR(struct Waveform *wfm, double t);
 
 
 #endif /* GB_h */

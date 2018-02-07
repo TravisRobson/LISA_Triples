@@ -11,6 +11,8 @@
 #include "GB.h"
 
 
+
+
 void FAST_LISA(double *params, long N, double *XLS, double *ALS, double *ELS, int NP)
 {
 	long n;      // iterator
@@ -47,6 +49,7 @@ void FAST_LISA(double *params, long N, double *XLS, double *ALS, double *ELS, in
 	XYZ(wfm->d, wfm->params[0]/wfm->T, wfm->q, N, XLS, ALS, ELS); // Calculate other TDI channels
  
 	free_waveform(wfm);  // Deallocate memory
+	free(wfm);
 	
 	return;
 }
@@ -303,6 +306,7 @@ void free_waveform(struct Waveform *wfm)
 	long i, j;
 	
 	for (i=0; i<3; i++) free(wfm->kdotr[i]);
+	free(wfm->kdotr);
 	
 	for (i=0; i<3; i++)
 	{
@@ -312,6 +316,7 @@ void free_waveform(struct Waveform *wfm)
 		free(wfm->dplus[i]);
 		free(wfm->dcross[i]);
 	}
+	free(wfm->eplus); free(wfm->ecross); free(wfm->dplus); free(wfm->dcross);
 	
 	free(wfm->r12);
 	free(wfm->r21);
@@ -343,6 +348,7 @@ void free_waveform(struct Waveform *wfm)
 		free(wfm->TR[i]);
 		free(wfm->TI[i]);
 	}
+	free(wfm->TR); free(wfm->TI);
 	
 	for (i=0; i<3; i++)
 	{
@@ -350,7 +356,9 @@ void free_waveform(struct Waveform *wfm)
 		{
 			free(wfm->d[i][j]);
 		}
-	}
+		free(wfm->d[i]);
+	} 
+	free(wfm->d);
 		
 	free(wfm->k);		
 	free(wfm->kdotx);
@@ -672,5 +680,141 @@ void XYZ(double ***d, double f0, long q, long M, double *XLS, double *ALS, doubl
 	free(YLS);
 	free(ZLS);
 
+	return;
+}
+
+
+
+
+void FAST_LISA_GR(double *params, long N, double *XLS, double *ALS, double *ELS, int NP)
+{
+	long n;      // iterator
+	
+	double t;	// time
+	
+	// waveform struct to hold pieces for calculation
+	struct Waveform *wfm = malloc(sizeof(struct Waveform));
+	
+	wfm->N  = N;				 // set number of samples
+	wfm->T  = Tobs;  		     // set observation period
+	wfm->NP = NP;				 // inform model of number of parameters being used
+	alloc_waveform(wfm);		 // allocate memory to hold pieces of waveform
+	copy_params(wfm, params);    // copy parameters to waveform structure
+		
+	get_basis_tensors(wfm);      //  Tensor construction for building slowly evolving LISA response  
+
+	for(n=0; n<N; n++)
+	{
+		t = wfm->T*(double)(n)/(double)N; // First time sample must be at t=0 for phasing
+		
+		calc_xi_f_GR(wfm ,t);		  // calc frequency and time variables
+		calc_sep_vecs(wfm);       // calculate the S/C separation vectors
+		calc_d_matrices(wfm);     // calculate pieces of waveform
+		calc_kdotr(wfm);		  // calculate dot product
+		get_transfer_GR(wfm, t);     // Calculating Transfer function
+		
+		fill_time_series(wfm, n); // Fill  time series data arrays with slowly evolving signal. 
+	}
+
+	fft_data(wfm);     // Numerical Fourier transform of slowly evolving signal   
+	unpack_data(wfm);  // Unpack arrays from FFT and normalize
+	
+	XYZ(wfm->d, wfm->params[0]/wfm->T, wfm->q, N, XLS, ALS, ELS); // Calculate other TDI channels
+ 
+	free_waveform(wfm);  // Deallocate memory
+	
+	return;
+}
+
+void calc_xi_f_GR(struct Waveform *wfm, double t)
+{
+	long i;
+	
+	double f0, dfdt_0, d2fdt2_0;
+	
+	f0       = wfm->params[0]/wfm->T;
+	if (wfm->NP > 7) dfdt_0   = wfm->params[7]/wfm->T/wfm->T;
+	d2fdt2_0 = 11./3.*dfdt_0*dfdt_0/f0/wfm->T/wfm->T/wfm->T;
+	//if (wfm->NP > 8) d2fdt2_0 = wfm->params[8]/wfm->T/wfm->T/wfm->T;
+
+	spacecraft(t, wfm->x, wfm->y, wfm->z); // Calculate position of each spacecraft at time t
+
+	for(i=0; i<3; i++) 
+	{	
+		wfm->kdotx[i] = (wfm->x[i]*wfm->k[0] + wfm->y[i]*wfm->k[1] + wfm->z[i]*wfm->k[2])/C;
+		//Wave arrival time at spacecraft i
+		wfm->xi[i]    = t - wfm->kdotx[i];
+		//First order approximation to frequency at spacecraft i
+		wfm->f[i]     = f0;
+		if (wfm->NP > 7) wfm->f[i] += dfdt_0*wfm->xi[i];
+		if (wfm->NP > 8) wfm->f[i] += 0.5*d2fdt2_0*wfm->xi[i]*wfm->xi[i];
+		
+		//Ratio of true frequency to transfer frequency
+		wfm->fonfs[i] = wfm->f[i]/fstar;
+	}
+	
+	return;
+}
+
+void get_transfer_GR(struct Waveform *wfm, double t)
+{
+	long i, j;
+	long q;
+	
+	double tran1r, tran1i;
+	double tran2r, tran2i; 
+	double aevol;			// amplitude evolution factor
+	double arg1, arg2, sinc;
+	double f0, dfdt_0, d2fdt2_0;
+	double df, phi0;
+	
+	f0       = wfm->params[0]/wfm->T;
+	phi0     = wfm->params[6];
+	
+	if (wfm->NP > 7) dfdt_0   = wfm->params[7]/wfm->T/wfm->T;
+	d2fdt2_0 = 11./3.*dfdt_0*dfdt_0/f0/wfm->T/wfm->T/wfm->T;
+	
+ 	//if (wfm->NP > 8) d2fdt2_0 = wfm->params[8]/wfm->T/wfm->T/wfm->T;
+ 	
+	q  = wfm->q;
+	df = PI2*(((double)q)/wfm->T);
+		
+	for(i=0; i<3; i++)
+	{
+		for(j=0; j<3; j++)
+		{
+			if(i!=j)
+			{
+				//Argument of transfer function
+				arg1 = 0.5*wfm->fonfs[i]*(1. - wfm->kdotr[i][j]);
+				
+				//Argument of complex exponentials
+				arg2 = PI2*f0*wfm->xi[i] + phi0 - df*t;
+				
+				if (wfm->NP > 7) arg2 += M_PI*dfdt_0*wfm->xi[i]*wfm->xi[i];
+				if (wfm->NP > 8) arg2 += M_PI*d2fdt2_0*wfm->xi[i]*wfm->xi[i]*wfm->xi[i]/3.0 ;
+				       	       
+				//Transfer function
+				sinc = 0.25*sin(arg1)/arg1;
+				
+				//Evolution of amplitude
+				aevol = 1.0;
+				if (wfm->NP > 7) aevol += 0.66666666666666666666*dfdt_0/f0*wfm->xi[i];  
+				
+				///Real and imaginary pieces of time series (no complex exponential)
+				tran1r = aevol*(wfm->dplus[i][j]*wfm->DPr + wfm->dcross[i][j]*wfm->DCr);
+				tran1i = aevol*(wfm->dplus[i][j]*wfm->DPi + wfm->dcross[i][j]*wfm->DCi);
+				
+				//Real and imaginry components of complex exponential
+				tran2r = cos(arg1 + arg2);
+				tran2i = sin(arg1 + arg2);    
+				
+				//Real & Imaginary part of the slowly evolving signal
+				wfm->TR[i][j] = sinc*(tran1r*tran2r - tran1i*tran2i);
+				wfm->TI[i][j] = sinc*(tran1r*tran2i + tran1i*tran2r);				
+			}
+		}
+	}
+	
 	return;
 }

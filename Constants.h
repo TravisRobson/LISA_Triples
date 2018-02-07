@@ -41,6 +41,11 @@
 #define G 6.67e-11
 
 
+/* ----------- Flags ---------------- */
+#define flag_GR 0
+#define flag_prog 1
+
+
 
 
 #endif /* Constants_h */

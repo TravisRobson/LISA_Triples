@@ -1,12 +1,13 @@
 CC = gcc-7
 
 LIBS  = gsl gslcblas m 
-CCFLAGS += -g -Wall -std=gnu99 -fmax-errors=5 -O2 -ffast-math -ftree-vectorize 
+CCFLAGS += -g -Wall -std=gnu99 -fmax-errors=5 
+#CCFLAGS += -O2 -ffast-math -ftree-vectorize 
 #CCFLAGS += -Werror 
 
 OBJS = GB.o LISA.o Triple.o
 
-all : $(OBJS) gb_test sim_ann
+all : $(OBJS) gb_test sim_ann mcmc
 
 
 LISA.o : LISA.c LISA.h
@@ -23,7 +24,10 @@ gb_test : $(OBJS) gb_test.c
 	
 sim_ann : $(OBJS) Sim_Anneal.c 
 	$(CC) $(CCFLAGS) -o sim_ann Sim_Anneal.c $(OBJS) $(INCDIR:%=-I%) $(LIBDIR:%=-L%) $(LIBS:%=-l%)
+	
+mcmc : $(OBJS) Triple_MCMC.c 
+	$(CC) $(CCFLAGS) -o mcmc Triple_MCMC.c $(OBJS) $(INCDIR:%=-I%) $(LIBDIR:%=-L%) $(LIBS:%=-l%)
 
 	
 clean: 
-	rm *.o gb_test sim_ann
+	rm *.o gb_test sim_ann mcmc

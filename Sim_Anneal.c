@@ -15,15 +15,19 @@
 #include "Triple.h"
 #include "LISA.h"
 
+
+// ./sim_ann 1 chain_50p1_0p25_15.dat 50.1 0.25 max_50p1_0p25_15.dat 5000
+
 #define PBSTR "||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||"
 #define PBWIDTH 60
 
-void printProgress(double percentage, double acceptance, double logL)
+void printProgress(double percentage, double acceptance, double logL, double *heat)
 {
     double val = (percentage * 100);
     int lpad = (int) (percentage * PBWIDTH);
     int rpad = PBWIDTH - lpad;
     printf ("\r%3.1f%% [%.*s%*s] acceptance rate: %f, logL: %f", val, lpad, PBSTR, rpad, "", acceptance, logL);
+    
     fflush (stdout);
 }
 
@@ -40,6 +44,7 @@ void matrix_eigenstuff(double **matrix, double **evector, double *evalue, int N)
 double invert_matrix(double **matrix, int N);
 void check_priors(double *params, int *meets_priors, int NP);
 void calc_TayExp_Fisher(struct GB *gb, double **Fisher);
+void calc_TayExp_Fisher_GR(struct GB *gb, double **Fisher);
 void setup_triple(struct Triple *trip, char *argv[]);
 double get_snrAE(struct GB *gb, double *AA, double *EE);
 double get_overlap(struct GB *gb, double *AA, double *EE, double *AALS, double *EELS);
@@ -53,8 +58,9 @@ void prior_jump(struct GB *gb_y, gsl_rng *r);
 int main(int argc, char *argv[])
 {
 	int p; 
-	const int NC = 8;
+	const int NC = 10;
 	int c = 0;
+//	int flag_GR = 0;
 	
 	long i, j, m, k;
 	const long NFFT = (long)(Tobs/dt);
@@ -82,7 +88,8 @@ int main(int argc, char *argv[])
 	fprintf(stdout, "Observation T: %.3f yrs\n", Tobs/YEAR);
 
 	// read in test source parameters
-	in_file = fopen("test_src.dat", "r");
+	// in_file = fopen("test_src.dat", "r");
+	in_file = fopen("high_src.dat", "r");
 	
 	fscanf(in_file, "%lg",   &f0);
 	fscanf(in_file, "%lg",   &dfdt_0);
@@ -95,11 +102,12 @@ int main(int argc, char *argv[])
 	
 	fclose(in_file);
 	
-	p = 7;
+	p = 8;
 	struct GB *gb = malloc(sizeof(struct GB));
 	gb->N  = pow(2, p);
 	gb->T  = Tobs;
-	gb->NP = 9;    // f0*T, cos(theta), phi, amp, cos(iota), psi, phi0, dfdt_0*T*T, d2fdt2_0*T*T*T
+	if (flag_GR == 0) gb->NP = 9;    // f0*T, cos(theta), phi, amp, cos(iota), psi, phi0, dfdt_0*T*T, d2fdt2_0*T*T*T
+	else gb->NP = 8;
 	gb->q  = (long)(f0*gb->T);
 	gb->params = malloc(gb->NP*sizeof(double));
 	
@@ -143,6 +151,7 @@ int main(int argc, char *argv[])
 	GB_triple(gb_data, XX, AA, EE, trip);
 
 	out_file = fopen("test_signal.dat" ,"w");
+	
 	print_signal(gb_data, out_file, XX, AA, EE);
 	
 	fprintf(stdout, "NFFT: %ld, 2^{p}, p = %ld\n", NFFT, (long)(log(NFFT)/log(2.)));
@@ -163,23 +172,14 @@ int main(int argc, char *argv[])
 	snr = get_snrAE(gb_data, AA, EE); fprintf(stdout, "\nAE SNR: %f\n", snr);
 	fill_data_stream(gb_data, XX, AA, EE, XXLS, AALS, EELS, NFFT);
 	
-	FAST_LISA(gb->params, gb->N, XX, AA, EE, gb->NP);
+	if (flag_GR == 0) FAST_LISA(gb->params, gb->N, XX, AA, EE, gb->NP);
+	else FAST_LISA_GR(gb->params, gb->N, XX, AA, EE, gb->NP);
 	gb->params[3] = log(amp*15./get_snrAE(gb, AA, EE));
 	// now calculate the first best guess
  	
         
-
-// 		gb->params[0]=9.98761323e+04 ;
-// 	gb->params[1]=4.90312853e-01;
-//    gb->params[2]= 5.26463018e+00  ;
-//    gb->params[3]= -5.19308985e+01  ;
-//    gb->params[4]= 1.93483086e-01;
-//    gb->params[5] =  2.52755578e+00;
-//    gb->params[6]= 4.69430206e+00 ;
-//     gb->params[7]= 5.71504209e+00 ;  
-//     gb->params[8]= 3.95360309e-01;
-//     gb->q = (long)gb->params[0];
-    FAST_LISA(gb->params, gb->N, XX, AA, EE, gb->NP);
+    if (flag_GR == 0)  FAST_LISA(gb->params, gb->N, XX, AA, EE, gb->NP);
+    else FAST_LISA_GR(gb->params, gb->N, XX, AA, EE, gb->NP);
     double first_snr = get_snrAE(gb, AA, EE);
 //     	out_file = fopen("max_signal.dat" ,"w");
 // 	print_signal(gb, out_file, XX, AA, EE);
@@ -199,7 +199,8 @@ int main(int argc, char *argv[])
 		for (j=0;j<gb->NP;j++) Fisher_AE[i][j] = 0.;
 	}
 	
-	calc_TayExp_Fisher(gb, Fisher_AE);
+	if (flag_GR == 0) calc_TayExp_Fisher(gb, Fisher_AE);
+	else calc_TayExp_Fisher_GR(gb, Fisher_AE);
 	
 	double **AE_Fish_evec;
 	double  *AE_Fish_eval;
@@ -218,7 +219,7 @@ int main(int argc, char *argv[])
 	
 	matrix_eigenstuff(Fisher_AE, AE_Fish_evec, AE_Fish_eval, gb->NP);
 	
-	NMCMC = 1e5;
+	NMCMC = 0; //1e5;
 	seed  = atoi(argv[1]); 
 	
 	gsl_rng_env_setup();
@@ -255,7 +256,6 @@ int main(int argc, char *argv[])
 	for (c=0; c<NC; c++) 
 	{
 		who[c] = c;
-		//gb_x_arr[c]->who = c;
 	}
 	    
     struct GB *gb_max = malloc(sizeof(struct GB));
@@ -288,22 +288,33 @@ int main(int argc, char *argv[])
 	}
 	
 	double nu = 100.;
-	double t0 = 1.e4;
+	double t0 = 1.e3;
 	double *S = malloc(NC*sizeof(double));
 	double **A = malloc(NC*sizeof(double *));
 	for (c=0; c<NC; c++) A[c] = malloc(2*sizeof(double));
+	for (c=0; c<NC; c++)
+	{
+		A[c][0] = 0.;
+		A[c][1] = 0.;
+	}
 			
+			
+	heat[0] = 4.; 
+	for (c=1; c<NC; c++) heat[c] = 1.4*heat[c-1];
+	heat[NC-1] = INFINITY;
+		
 	for (m=0; m<NMCMC; m++)
 	{
 		//heat[0] = pow(10.0, -3.*(double)(m)/(double)(NMCMC));
-		heat[0] = 4.*pow(10.0, -3.6*(double)(m)/(double)(NMCMC));
-		for (c=1; c<NC; c++) heat[c] = heat[c-1]*1.2; //if (m==0) 
+		heat[0]    = 4.*pow(10.0, -3.6*(double)(m)/(double)(NMCMC)); 
+//		heat[NC-1] = 1.*pow(10.0, -2.5*(double)(m)/(double)(NMCMC));
+		for (c=1; c<NC; c++) heat[c] = heat[c-1]*1.4; //if (m==0) 
 // 		for (c=0; c<NC; c++) heat[c] = pow(10.0, -3.0*(double)(m)/(double)(NMCMC)*(double)(NC-1-c)/(double)(NC-1));
 		
 		alpha = gsl_rng_uniform(r);
 		
-		if ((m+1)%(int)(0.01*NMCMC) == 0.) printProgress((double)(m+1)/(double)NMCMC, (double)maccept/(double)mcount, logLx[who[0]]);
-		if (m == NMCMC-1) printProgress((double)(m+1)/(double)NMCMC, (double)maccept/(double)mcount, logLx[who[0]]);	
+		if ((m+1)%(int)(0.01*NMCMC) == 0.) printProgress((double)(m+1)/(double)NMCMC, (double)maccept/(double)mcount, logLx[who[0]], heat);
+		if (m == NMCMC-1) printProgress((double)(m+1)/(double)NMCMC, (double)maccept/(double)mcount, logLx[who[0]], heat);	
 		
 		// propose chain swap
 		if (NC > 1 && alpha < 0.5)
@@ -347,7 +358,8 @@ int main(int argc, char *argv[])
 				
 				if (meets_priors == 1)
 				{
-					FAST_LISA(gb_y->params, gb_y->N, XX, AA, EE, gb_y->NP); 
+					if (flag_GR == 0) FAST_LISA(gb_y->params, gb_y->N, XX, AA, EE, gb_y->NP); 
+					else FAST_LISA_GR(gb_y->params, gb_y->N, XX, AA, EE, gb_y->NP); 
 					logLy = get_logL(gb_y, AA, EE, AALS, EELS);		
 					loga = log(gsl_rng_uniform(r));
 					
@@ -379,25 +391,28 @@ int main(int argc, char *argv[])
 				for (j=0; j<gb->NP; j++) history[c][m/10][j] = gb_x_arr[who[c]]->params[j]; 
 			}
 		}
-// 		if (m%100 == 0) // adjust temperature ladder
+// 		if (m%10 == 0 && m>3e4) // adjust temperature ladder
 // 		{
 // 			for (c=1; c<NC-1; c++)
 // 			{
 // 				S[c]    = log(heat[c] - heat[c-1]);
-// 				A[c][0] = (double)acc[c-1]/(double)cnt[c-1];
-// 				A[c][1] = (double)acc[c]/(double)cnt[c];
+// 				if (cnt[c-1] > 0 ) A[c][0] = (double)acc[c-1]/(double)cnt[c-1]; 
+// 				else A[c-1][0] = 0.;
+// 				if (cnt[c] > 0 ) A[c][1] = (double)acc[c]/(double)cnt[c];
+// 				else A[c][0] = 0.;
 // 			}	
-// 			for (c=1; c<NC; c++)
+// 			for (c=1; c<NC-1; c++)
 // 			{
-// 				S[c] = (A[c][0] - A[c][1])*(t0/((double)NMCMC + t0))/nu;
-// 				heat[c] = heat[c-1] + exp(S[c]);
+// 				S[c] += (A[c][0] - A[c][1])*(t0/((double)m + t0))/nu; //fprintf(stdout, "wtf %f\n", A[c][1]);
+// 				heat[c] = heat[c-1] + exp(S[c]);//*pow(10.0, -3.*(double)(m)/(double)(NMCMC));
 // 				if (heat[c]/heat[c-1] < 1.01) heat[c] = 1.01*heat[c-1];
 // 			}	
 // 		}
 		
 		if (m%100 == 0)
 		{
-			calc_TayExp_Fisher(gb_max, Fisher_AE);
+			if(flag_GR == 0) calc_TayExp_Fisher(gb_max, Fisher_AE);
+			else calc_TayExp_Fisher_GR(gb_max, Fisher_AE);
 			cond = invert_matrix(Fisher_AE, gb_max->NP);
 			matrix_eigenstuff(Fisher_AE, AE_Fish_evec, AE_Fish_eval, gb_max->NP);
 		}
@@ -416,6 +431,11 @@ int main(int argc, char *argv[])
 	{
 		fprintf(stdout, "logLx[%d]: %f\n", c, logLx[who[c]]);
 	}
+	fprintf(stdout, "\n");
+	for (c=0; c<NC; c++)
+	{
+		fprintf(stdout, "heat[%d]: %f\n", c, heat[c]);
+	}
 	for (c=0; c<NC-1; c++)
 	{	
 		cnt[c] = 0;
@@ -426,7 +446,8 @@ int main(int argc, char *argv[])
 	
 	if (m%1000 == 0)
 	{
-		calc_TayExp_Fisher(gb_max, Fisher_AE);
+		if (flag_GR == 0) calc_TayExp_Fisher(gb_max, Fisher_AE);
+		else calc_TayExp_Fisher_GR(gb_max, Fisher_AE);
 		cond = invert_matrix(Fisher_AE, gb_max->NP);
 		matrix_eigenstuff(Fisher_AE, AE_Fish_evec, AE_Fish_eval, gb_max->NP);
 		fprintf(stdout, "\nheat[0]: %f, logL_max: %f\n", heat[0], logL_max);
@@ -434,11 +455,12 @@ int main(int argc, char *argv[])
 	
 	for (i=0; i<NC; i++) for (j=0; j<NMCMC/10; j++) free(history[i][j]);
 	
-	calc_TayExp_Fisher(gb_max, Fisher_AE);
+	if (flag_GR == 0) calc_TayExp_Fisher(gb_max, Fisher_AE);
+	else calc_TayExp_Fisher_GR(gb_max, Fisher_AE);
 	cond = invert_matrix(Fisher_AE, gb->NP); fprintf(stdout, "\n\nCondition number: %e\n\n", cond);
 	matrix_eigenstuff(Fisher_AE, AE_Fish_evec, AE_Fish_eval, gb->NP);
 	
-	NMCMC = 1e5;
+	NMCMC = 1e4;
 	//NC = 7;
 	
 	history = malloc(NC*sizeof(double **));
@@ -449,8 +471,12 @@ int main(int argc, char *argv[])
 	}	
 		
 	heat[0] = 1.;
-	for (c=1; c<NC; c++) heat[c] = heat[c-1]*1.8;
+	for (c=1; c<NC; c++) heat[c] = heat[c-1]*1.4;
 	mcount = 0; scount = 0; maccept = 0; saccept = 0;
+	heat[NC-1] = 0.04*snr*snr;
+	heat[NC-1] = INFINITY;
+	
+	for (c=0; c<NC; c++) fprintf(stdout, "heat[%d]: %f\n", c, heat[c]);
 	
 // 	FILE *log_file;
 // 	log_file = fopen("logL.dat", "w");
@@ -463,20 +489,21 @@ int main(int argc, char *argv[])
 		A[c][1] = 0.;
 	}
 	
-	nu = 1.;
-	t0 = 1.e4;
-
-	
-	for (m=0; m<NMCMC; m++)
+	nu = 100.;
+	t0 = 1.e3;
+	double Ai, Aip1;
+	double kap;
+	long NBURN = atoi(argv[6]);
+	for (m=-NBURN; m<NMCMC; m++)
 	{
-		if ((m+1)%(int)(0.01*NMCMC) == 0.) printProgress((double)(m+1)/(double)NMCMC, (double)maccept/(double)mcount, logLx[who[0]]);
-		if (m == NMCMC-1)printProgress((double)(m+1)/(double)NMCMC, (double)maccept/(double)mcount, logLx[who[0]]);	
+		if ((m+1)%(int)(0.01*NMCMC) == 0. && m>0) printProgress((double)(m+1)/(double)NMCMC, (double)maccept/(double)mcount, logLx[who[0]], heat);
+		if (m == NMCMC-1)printProgress((double)(m+1)/(double)NMCMC, (double)maccept/(double)mcount, logLx[who[0]], heat);	
 		alpha = gsl_rng_uniform(r);
 		
 		// propose chain swap
 		if (NC > 1 && alpha < 0.5)
 		{	
-			scount++;
+			if (m>0) scount++;
 			alpha = (double)(NC-1)*gsl_rng_uniform(r);
 			k = (int)(alpha);
 			if (m>0e4) cnt[k]++;
@@ -497,15 +524,15 @@ int main(int argc, char *argv[])
 		
 		else // do a MCMC update
 		{
-			mcount++;
+			if (m>0) mcount++;
 			for (c=0; c<NC; c++)
 			{
 				id = who[c];
 
 				jump = gsl_rng_uniform(r);
 
-				if (jump < 0.0) prior_jump(gb_y, r);
-				else if (jump < 0.5 && jump > 0.00) Fisher_jump(gb_y, gb_x_arr[id], r_arr[c], AE_Fish_evec, AE_Fish_eval, heat[c]);
+				if (jump < 0.01) prior_jump(gb_y, r);
+				else if ((jump < 0.5 && jump > 0.01) || m<0) Fisher_jump(gb_y, gb_x_arr[id], r_arr[c], AE_Fish_evec, AE_Fish_eval, heat[c]);
 				else diff_ev_jump(gb_x_arr[id], gb_y, r_arr[c], history, m, c);
 				//Fisher_jump(gb_y, gb_x_arr[id], r_arr[c], AE_Fish_evec, AE_Fish_eval, heat[c]);
 				
@@ -516,7 +543,8 @@ int main(int argc, char *argv[])
 				logLy = -1.0e30;
 				if (meets_priors == 1)
 				{
-					FAST_LISA(gb_y->params, gb_y->N, XX, AA, EE, gb_y->NP); 
+					if (flag_GR == 0) FAST_LISA(gb_y->params, gb_y->N, XX, AA, EE, gb_y->NP); 
+					else FAST_LISA_GR(gb_y->params, gb_y->N, XX, AA, EE, gb_y->NP); 
 					logLy = get_logL(gb_y, AA, EE, AALS, EELS);		
 					if (logLy != logLy) fprintf(stderr, "[%ld] WTF logLy...\n", m);
 					
@@ -524,7 +552,7 @@ int main(int argc, char *argv[])
 
 					if (logLy > -INFINITY && loga < (logLy - logLx[id])/heat[c])
 					{
-						if (c==0) maccept++;   
+						if (c==0 && m>0) maccept++;   
 						gb_x_arr[id]->q  = gb_y->q;
 						for (j=0; j<gb->NP; j++) gb_x_arr[id]->params[j] = gb_y->params[j];
 						logLx[id] = logLy;
@@ -540,42 +568,61 @@ int main(int argc, char *argv[])
 				}
 			}
 		}
-		if (m%10 == 0)
+		if (m%10 == 0 && m>0)
 		{	for (c=0; c<NC; c++)
 			{
 				for (j=0; j<gb->NP; j++) history[c][m/10][j] = gb_x_arr[who[c]]->params[j]; 
 			}
-			
+
 			// print cold chain info
 			fprintf(out_file, "%ld %.12g ", m/10, logLx[who[0]]);
 			for (j=0; j<gb->NP; j++) fprintf(out_file, "%.12g ", gb_x_arr[who[0]]->params[j]);
 			fprintf(out_file, "\n");
-			
+				
 			// print different log-likelihoods
 // 			fprintf(log_file, "%ld %.12g ", m/10, logLx[who[0]]);
 // 			for (c=1; c<NC; c++) fprintf(log_file, "%.12g ", logLx[who[c]]);
 // 			fprintf(log_file, "\n");
 		}
 		
-		if (m%100 == 0) // adjust temperature ladder
+// 		if (m%100 == 0 && m>3e3) // adjust temperature ladder
+// 		{
+// 			for (c=1; c<NC-1; c++)
+// 			{
+// 				S[c]    = log(heat[c] - heat[c-1]);
+// 				A[c][0] = (double)acc[c-1]/(double)cnt[c-1];
+// 				A[c][1] = (double)acc[c]/(double)cnt[c];
+// 			}	
+// 			for (c=1; c<NC; c++)
+// 			{
+// 				S[c] += (A[c][0] - A[c][1])*(t0/((double)m + t0))/nu;
+// 				heat[c] = heat[c-1] + exp(S[c]);
+// 				if (heat[c]/heat[c-1] < 1.01) heat[c] = 1.01*heat[c-1];
+// 			}	
+// 		}
+		if (m%10 == 0 && m>3e4) // adjust temperature ladder
 		{
 			for (c=1; c<NC-1; c++)
 			{
 				S[c]    = log(heat[c] - heat[c-1]);
-				A[c][0] = (double)acc[c-1]/(double)cnt[c-1];
-				A[c][1] = (double)acc[c]/(double)cnt[c];
+				//A[c][0] = (double)acc[c-1]/(double)cnt[c-1];
+				//A[c][1] = (double)acc[c]/(double)cnt[c];
 			}	
-			for (c=1; c<NC; c++)
+			for (c=1; c<NC-1; c++)
 			{
-				S[c] = (A[c][0] - A[c][1])*(t0/((double)NMCMC + t0))/nu;
+				Ai = (double)acc[c-1]/(double)cnt[c-1];
+				Aip1 = (double)acc[c]/(double)cnt[c];
+				kap = (t0/((double)m + t0))/nu;
+				if (cnt[c-1] > 0. && cnt[c] > 0.) S[c] += (Ai - Aip1)*kap;
 				heat[c] = heat[c-1] + exp(S[c]);
-				if (heat[c]/heat[c-1] < 1.01) heat[c] = 1.01*heat[c-1];
+				if (heat[c]/heat[c-1] < 1.1) heat[c] = 1.1*heat[c-1];
 			}	
 		}
 		
-		if (m%100 == 0)
+		if (m%100 == 0 && m>0)
 		{
-			calc_TayExp_Fisher(gb_max, Fisher_AE);
+			if (flag_GR == 0) calc_TayExp_Fisher(gb_max, Fisher_AE);
+			else calc_TayExp_Fisher_GR(gb_max, Fisher_AE);
 			cond = invert_matrix(Fisher_AE, gb_max->NP);
 			matrix_eigenstuff(Fisher_AE, AE_Fish_evec, AE_Fish_eval, gb_max->NP);
 		}
@@ -594,13 +641,20 @@ int main(int argc, char *argv[])
 		fprintf(stdout, "swap[%d] rate: %f\n", c, (double)acc[c]/(double)cnt[c]);
 	}
 	fprintf(stdout, "\n");
+	for (c=0; c<NC-1; c++)
+	{
+		fprintf(stdout, "logLx[%d]: %f\n", c, logLx[who[c]]);
+	}
+	fprintf(stdout, "\n");
 	for (c=0; c<NC; c++)
 	{
 		fprintf(stdout, "heat[%d]: %f\n", c, heat[c]);
 	}
+
 	
 	// calculate max-likelihood signal
-	FAST_LISA(gb_max->params, gb_max->N, XX, AA, EE, gb_max->NP);
+	if (flag_GR == 0) FAST_LISA(gb_max->params, gb_max->N, XX, AA, EE, gb_max->NP);
+	else FAST_LISA_GR(gb_max->params, gb_max->N, XX, AA, EE, gb_max->NP);
 	snr_max = get_snrAE(gb_max, AA, EE); fprintf(stdout, "\nAE max SNR: %f\n", snr_max);														
 							
 	FF = get_overlap(gb_max, AA, EE, AALS, EELS)/snr/snr_max;  fprintf(stdout, "\nFitting Factor: %f\n", FF);
@@ -610,7 +664,8 @@ int main(int argc, char *argv[])
 	fprintf(stdout, "\nSimulated Annealing runtime: %f sec\n", time_spent);
 		
 		
-	FAST_LISA(gb_max->params, gb_max->N, XX, AA, EE, gb_max->NP);
+	if (flag_GR == 0) FAST_LISA(gb_max->params, gb_max->N, XX, AA, EE, gb_max->NP);
+	else FAST_LISA_GR(gb_max->params, gb_max->N, XX, AA, EE, gb_max->NP);
 	out_file = fopen("max_signal.dat" ,"w");
 	print_signal(gb_max, out_file, XX, AA, EE);
 	
@@ -698,8 +753,12 @@ void prior_jump(struct GB *gb_y, gsl_rng *r)
 	const int NP = gb_y->NP;
 	
 	// HACK
-	f_lo = 3.0e-3; //2.0e-3; // 7.0e-4;   // lower frequency range for data
-	f_up = 3.2e-3; //4.0e-3; // 12.0e-3;  // upper frequency range for data
+	// 0.0062309058174795
+	f_lo = 0.0062309058174795 - 0.0003;
+	f_up = 0.0062309058174795 + 0.0003;
+	
+	// f_lo = 3.0e-3; //2.0e-3; // 7.0e-4;   // lower frequency range for data
+	// f_up = 3.2e-3; //4.0e-3; // 12.0e-3;  // upper frequency range for data
 	
 	gb_y->params[0] = f_lo*Tobs + gsl_rng_uniform(r)*(f_up*Tobs - f_lo*Tobs);
 	gb_y->params[1] = -1. + gsl_rng_uniform(r)*2.;
@@ -1056,13 +1115,155 @@ void calc_TayExp_Fisher(struct GB *gb, double **Fisher)
 	return;
 }
 
+void calc_TayExp_Fisher_GR(struct GB *gb, double **Fisher)
+{
+	int i, j, k, m;
+	int iRe, iIm;
+	
+	const int NP = gb->NP;
+	const int N  = gb->N;
+	
+	const double ep = 1.0e-4;
+	double arg, f;
+	double SnAE, SnX;
+	
+	double *XX_p, *AA_p, *EE_p;
+	double *XX_m, *AA_m, *EE_m;
+	double **XX_d, **AA_d, **EE_d;
+	
+	struct GB *gb_p = malloc(sizeof(struct GB));
+	struct GB *gb_m = malloc(sizeof(struct GB));
+	
+	gb_p->N 	 = N; //pow(2, p);
+	gb_m->N 	 = N; //pow(2, p);
+	gb_p->T 	 = Tobs;
+	gb_m->T 	 = Tobs;
+	gb_p->NP     = NP;
+	gb_m->NP	 = NP;
+	gb_p->params = malloc(NP*sizeof(double));
+	gb_m->params = malloc(NP*sizeof(double));			
+	gb_p->q      = (long)(gb->params[0]); // the bin really won't change
+	gb_m->q      = (long)(gb->params[0]);
+	
+	XX_p = malloc(2*N*sizeof(double));
+	AA_p = malloc(2*N*sizeof(double));
+	EE_p = malloc(2*N*sizeof(double));
+	XX_m = malloc(2*N*sizeof(double));
+	AA_m = malloc(2*N*sizeof(double));
+	EE_m = malloc(2*N*sizeof(double));
+	
+	XX_d = malloc(gb->NP*sizeof(double *));
+	for (i=0; i<gb->NP; i++) XX_d[i] = malloc(2*gb->N*sizeof(double));
+	AA_d = malloc(gb->NP*sizeof(double *));
+	for (i=0; i<gb->NP; i++) AA_d[i] = malloc(2*gb->N*sizeof(double));
+	EE_d = malloc(gb->NP*sizeof(double *));
+	for (i=0; i<gb->NP; i++) EE_d[i] = malloc(2*gb->N*sizeof(double));
+	
+	for (i=0; i<2*N; i++)
+	{
+		XX_p[i] = 0.;
+		AA_p[i] = 0.;
+		EE_p[i] = 0.;
+		XX_m[i] = 0.;
+		AA_m[i] = 0.;
+		EE_m[i] = 0.;
+	}
+	
+	for (i=0; i<NP; i++)
+	{
+		gb_p->params[i] = 0.;
+		gb_m->params[i] = 0.;
+	}
+	
+	for (i=0; i<gb->NP; i++) 
+	{
+		for(j=0; j<2*gb->N; j++) 
+		{
+			XX_d[i][j] = 0.;
+			AA_d[i][j] = 0.;
+			EE_d[i][j] = 0.;
+		}
+	}
+	
+	// calculate the derivatives as a function of frequency
+	for (i=0; i<NP; i++)
+	{
+		for (j=0; j<NP; j++)
+		{
+			gb_p->params[j] = gb->params[j];
+			gb_m->params[j] = gb->params[j];
+		}
+
+		gb_p->params[i] += ep;
+		gb_m->params[i] -= ep;
+		
+		FAST_LISA_GR(gb_p->params, gb_p->N, XX_p, AA_p, EE_p, gb_p->NP);
+		FAST_LISA_GR(gb_m->params, gb_m->N, XX_m, AA_m, EE_m, gb_m->NP);
+		
+		for (j=0; j<2*N; j++) 
+		{
+			XX_d[i][j] = (XX_p[j] - XX_m[j])/(2.0*ep);
+			AA_d[i][j] = (AA_p[j] - AA_m[j])/(2.0*ep);
+			EE_d[i][j] = (EE_p[j] - EE_m[j])/(2.0*ep);
+		}
+	}
+	free(XX_p); free(AA_p); free(EE_p);
+	free(XX_m); free(AA_m); free(EE_m);
+	free(gb_p->params); free(gb_m->params);
+	free(gb_p); free(gb_m);
+	
+	
+	// NWIP the derivative arrays
+	for (i=0; i<NP; i++)
+	{
+		for(j=i; j<NP; j++)
+		{
+			arg = 0.;
+			for (m=0; m<N; m++)
+			{
+				k = (gb->q + m - gb->N/2);    
+				f = (double)(k)/Tobs; 			
+				instrument_noise(f, &SnAE, &SnX);
+		
+				iRe = 2*m;		
+				iIm = 2*m+1;   
+		
+				arg +=  (AA_d[i][iRe]*AA_d[j][iRe] + AA_d[i][iIm]*AA_d[j][iIm] 
+					    +EE_d[i][iRe]*EE_d[j][iRe] + EE_d[i][iIm]*EE_d[j][iIm])/SnAE;
+			}
+			arg *= 4.*Tobs;
+			
+			Fisher[i][j] = arg;
+		}
+	}
+	for(i=0; i<NP; i++)
+	{
+		free(XX_d[i]);
+		free(AA_d[i]);
+		free(EE_d[i]);
+	} 
+	
+	// make use of symmetry
+	for (i=0; i<NP; i++)
+	{
+		for (j=i+1; j<NP; j++)
+		{
+			Fisher[j][i] = Fisher[i][j];
+		}
+	}
+	return;
+}
+
 void check_priors(double *params, int *meets_priors, int NP)
 {
 	double f_lo, f_up;
 	
 	// HACK
-	f_lo = 3.0e-3;//2.0e-3; // 7.0e-4;   // lower frequency range for data
-	f_up = 3.2e-3;//4.0e-3; // 12.0e-3;  // upper frequency range for data
+// 	f_lo = 3.0e-3;//2.0e-3; // 7.0e-4;   // lower frequency range for data
+// 	f_up = 3.2e-3;//4.0e-3; // 12.0e-3;  // upper frequency range for data
+	
+	f_lo = 0.0062309058174795 - 0.0003;
+	f_up = 0.0062309058174795 + 0.0003;
  	
 	if (params[0] < f_lo*Tobs  || params[0] > f_up*Tobs) 
 	{
@@ -1141,8 +1342,11 @@ double get_logL(struct GB *gb, double *AA, double *EE, double *AALS, double *EEL
 		logL = 0.;
 	
 		// HACK
-		f_lo = 3.0e-3; // 2.0e-3; // 7.0e-4;   // lower frequency range for data
-		f_up = 3.2e-3; // 4.0e-3; // 12.0e-3;  // upper frequency range for data
+// 		f_lo = 3.0e-3; // 2.0e-3; // 7.0e-4;   // lower frequency range for data
+// 		f_up = 3.2e-3; // 4.0e-3; // 12.0e-3;  // upper frequency range for data
+		
+		f_lo = 0.0062309058174795 - 0.0003;
+		f_up = 0.0062309058174795 + 0.0003;
 
 		const int NFFT = (long)(Tobs/dt);
 	
